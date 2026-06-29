@@ -1,0 +1,102 @@
+import { useRef, useMemo } from 'react';
+import { useFrame } from '@react-three/fiber';
+import * as THREE from 'three';
+
+const vertexShader = `
+  uniform float uProgress;
+  attribute vec3 aChaosPosition;
+  attribute vec3 aTargetPosition;
+  varying vec3 vPosition;
+  
+  void main() {
+    // GPU 端丝滑插值
+    vec3 mixedPosition = mix(aTargetPosition, aChaosPosition, uProgress);
+    vPosition = mixedPosition;
+    vec4 mvPosition = modelViewMatrix * vec4(mixedPosition, 1.0);
+    gl_Position = projectionMatrix * mvPosition;
+    // 增加景深粒子大小微调
+    gl_PointSize = (30.0 / -mvPosition.z) * (0.8 + sin(mixedPosition.y * 10.0) * 0.2);
+  }
+`;
+
+const fragmentShader = `
+  varying vec3 vPosition;
+  void main() {
+    // 营造奢华深祖母绿加金色高光过渡
+    vec3 emerald = vec3(0.02, 0.25, 0.12);
+    vec3 luxuryGold = vec3(1.0, 0.85, 0.3);
+    float mixFactor = smoothstep(-2.0, 6.0, vPosition.y);
+    vec3 finalColor = mix(emerald, luxuryGold, mixFactor * 0.4);
+    
+    // 柔和圆点粒子
+    float dist = length(gl_PointCoord - vec2(0.5));
+    if (dist > 0.5) discard;
+    float alpha = smoothstep(0.5, 0.1, dist);
+    
+    gl_FragColor = vec4(finalColor, alpha * 0.8);
+  }
+`;
+
+export const Foliage = ({ gestureState }: { gestureState: any }) => {
+  const meshRef = useRef<THREE.Points>(null);
+  const count = 40000;
+
+  const [chaosData, targetData] = useMemo(() => {
+    const chaos = new Float32Array(count * 3);
+    const target = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      // CHAOS 状态：完美的球体空间散落
+      const u = Math.random();
+      const v = Math.random();
+      const theta = u * 2.0 * Math.PI;
+      const phi = Math.acos(2.0 * v - 1.0);
+      const r = 8 * Math.cbrt(Math.random());
+      chaos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      chaos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta) + 2;
+      chaos[i * 3 + 2] = r * Math.cos(phi);
+
+      // FORMED 状态：圆锥形圣诞树
+      const height = Math.random() * 8; 
+      const radius = ((8 - height) / 8) * 3.5 * Math.pow(Math.random(), 0.6);
+      const angle = Math.random() * Math.PI * 2;
+      target[i * 3] = Math.cos(angle) * radius;
+      target[i * 3 + 1] = height - 2; 
+      target[i * 3 + 2] = Math.sin(angle) * radius;
+    }
+    return [chaos, target];
+  }, []);
+
+  const uniforms = useMemo(() => ({
+    uProgress: { value: 0 }
+  }), []);
+
+  useFrame((state, delta) => {
+    if (!meshRef.current) return;
+    // 逼近目标状态
+    const g = gestureState.current;
+    g.progress = THREE.MathUtils.lerp(g.progress, g.target, delta * 3.0);
+    (meshRef.current.material as THREE.ShaderMaterial).uniforms.uProgress.value = g.progress;
+    
+    // 树体自转
+    meshRef.current.rotation.y += delta * 0.1 * (1.0 - g.progress);
+  });
+
+  return (
+    <points ref={meshRef}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[targetData, 3]} />
+        <bufferAttribute attach="attributes-aChaosPosition" args={[chaosData, 3]} />
+        <bufferAttribute attach="attributes-aTargetPosition" args={[targetData, 3]} />
+      </bufferGeometry>
+      <shaderMaterial 
+        vertexShader={vertexShader}
+        fragmentShader={fragmentShader}
+        uniforms={uniforms}
+        transparent
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
+      />
+    </points>
+  );
+};
+
